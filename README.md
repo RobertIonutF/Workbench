@@ -6,7 +6,7 @@ A Windows-first desktop coding agent built with Rust, Tauri and React. Model con
 
 ![Workbench desktop workspace](docs/images/workbench.png)
 
-[Download Windows preview](https://github.com/RobertIonutF/Workbench/releases/tag/v0.1.0) · [Architecture](docs/ARCHITECTURE.md) · [Contributing](CONTRIBUTING.md) · [MIT license](LICENSE)
+[Download Windows preview](https://github.com/RobertIonutF/Workbench/releases/tag/v0.2.0) · [Feature guide](docs/FEATURES.md) · [Architecture](docs/ARCHITECTURE.md) · [Contributing](CONTRIBUTING.md) · [MIT license](LICENSE)
 
 ## Run
 
@@ -21,6 +21,14 @@ First run:
 5. Install or create plugins in **Plugins** and select their skills/tools in the task options.
 
 No model weights, paid API credits or provider credentials are bundled. A configured endpoint is not represented as verified until its test succeeds.
+
+## New in 0.2
+
+- **Control center:** save model profiles, compare real responses, inspect usage, run agent teams, manage Git worktrees and pull requests, edit project memory, configure workflow checks and scheduled tasks, or use the interactive terminal.
+- **Workspace:** syntax-highlighted editor tabs, side-by-side diffs, hunk review with comments, file/symbol context, image/PDF attachments, task plans, pause/resume, steering, queued messages and conversation forks.
+- **Plugin Studio:** schema-driven tool forms, resources/prompts, saved regression cases and redacted traces, model-assisted plugin creation, pinned catalog packages, managed local previews and browser assertions, encrypted backups and signed update checks.
+
+These actions use the Rust runtime and actual files, processes or network requests. API calls and capability probes may incur provider charges. The desktop can keep jobs running in the tray when background mode is enabled; schedules run while Workbench is open, and missed intervals are not replayed in a burst.
 
 ## Plugins
 
@@ -94,6 +102,6 @@ Run `powershell -File scripts/package.ps1` to build and create installer, portab
 
 See `docs/VERIFICATION.md` for actual checks and limitations. Deterministic tests and UI fixtures do not establish a live account entitlement or guarantee a particular model's coding quality.
 
-This release implements local coding, custom model connections, skills/MCP plugins and local authoring. A hosted public store, remote worker fleet, official Codex/Claude engine bridges, enterprise cloud adapters, mobile clients and parallel agents remain separate roadmap work; they are not represented by placeholder controls in the product.
+Version 0.2 adds model profiles and comparisons, usage and budgets, interactive terminals, task steering and forks, context attachments, agent teams with Git worktrees, review and PR publishing, scheduled jobs, Plugin Studio, a pinned plugin catalog, local browser tests, encrypted profile backups, and verified updates. See the [feature guide](docs/FEATURES.md) for workflows and precise boundaries. A hosted multi-user marketplace, remote worker fleet, mobile clients and official third-party engine bridges remain separate work.
 
 Workbench's implementation is independently authored and does not redistribute the Codex application. Original Workbench code is MIT-licensed; bundled dependencies and Agent Plugins schemas retain their upstream licenses in [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt).

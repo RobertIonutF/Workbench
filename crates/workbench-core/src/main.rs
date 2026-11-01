@@ -17,6 +17,14 @@ struct Cli {
 }
 #[derive(Subcommand)]
 enum Commands {
+    ApplyUpdate {
+        #[arg(long)]
+        wait_pid: u32,
+        #[arg(long)]
+        installer: PathBuf,
+        #[arg(long)]
+        sha256: String,
+    },
     Serve {
         #[arg(long, default_value_t = 47831)]
         port: u16,
@@ -92,6 +100,14 @@ async fn main() -> Result<()> {
         .with_writer(std::io::stderr)
         .init();
     let cli = Cli::parse();
+    if let Some(Commands::ApplyUpdate {
+        wait_pid,
+        installer,
+        sha256,
+    }) = &cli.command
+    {
+        return workbench_core::studio::apply_update_after_exit(*wait_pid, installer, sha256).await;
+    }
     let command = cli.command.unwrap_or(Commands::Serve {
         port: 47831,
         ui_dir: None,
@@ -107,6 +123,9 @@ async fn main() -> Result<()> {
         }
     };
     match command {
+        Commands::ApplyUpdate { .. } => {
+            unreachable!("Update helper is dispatched before opening a profile")
+        }
         Commands::Serve { port, ui_dir, open } => {
             let (address, token) = workbench_core::api::start(app.clone(), port, ui_dir).await?;
             let url = format!("http://{address}/#token={token}");
@@ -117,9 +136,7 @@ async fn main() -> Result<()> {
                 let _ = webbrowser::open(&url);
             }
             tokio::signal::ctrl_c().await?;
-            for cancel in app.runs.lock().values() {
-                cancel.cancel();
-            }
+            app.begin_shutdown();
             tokio::time::sleep(std::time::Duration::from_millis(750)).await;
         }
         Commands::Plugin { command } => {
@@ -204,6 +221,7 @@ async fn remote(command: Commands, info: &serde_json::Value) -> Result<()> {
     use reqwest::Method;
     use workbench_core::cli_client::request;
     let result=match command {
+        Commands::ApplyUpdate{..}=>anyhow::bail!("Update helper must run before opening a profile"),
         Commands::Serve{open,..}=>{
             request(info,Method::GET,"state",None).await?;
             if open {webbrowser::open(&format!("{}/#token={}",workbench_core::app::text(info,"baseUrl"),workbench_core::app::text(info,"token")))?;}

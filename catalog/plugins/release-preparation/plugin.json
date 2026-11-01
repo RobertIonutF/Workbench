@@ -1,0 +1,6 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "release-preparation",
+  "version": "0.2.0",
+  "description": "Prepare a reviewable release with version and artifact checks."
+}

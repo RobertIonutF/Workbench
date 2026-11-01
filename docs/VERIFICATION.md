@@ -2,7 +2,17 @@
 
 Verified locally on Windows x64, 1 November 2026. This ledger distinguishes actual local verification from account-dependent checks.
 
-## Passed
+## Version 0.2 checks
+
+- Full Rust suite: 26 unit + 5 process lifecycle + 21 feature + 14 integration + 7 Studio tests passed (73 total). Two intentionally ignored entries remain the internal helper and the unavailable Docker-daemon check.
+- Actual tests cover task budgets, steering/pause, exact model/credential destination binding, worktree commit/integration, stale hunks, hook failures/revocation/inheritance, safe scheduler claims/recovery/shutdown and a real ConPTY input/output round trip.
+- Provider fixtures cover all four image dialects, OAuth restrictions and Gemini signed continuation/function names; usage includes thought tokens.
+- Studio exercised real stdio tools/resources/prompts, saved assertions, generated plugin source through an actual fixture API, Python preview lifecycle, isolated Edge fill/click/text assertions/screenshots, redacted text logs, encrypted portable backup and restart restore, wrong-passphrase/tamper failure, signed-manifest trust and installer precheck rejection.
+- Latest frontend typecheck/build, workspace Clippy with warnings denied and production npm audit passed. The editor is lazy loaded; its minified chunk currently exceeds Vite's advisory size threshold.
+- Browser UI checks passed for profile creation, actual comparison/expected-text assertion, plan/context selection, actual context inspection and an actual streamed fixture response. Studio UI tests passed schema forms, saved tests, browser results, backups and the three-entry catalog; narrow viewport and console checks passed.
+- New runtime dependency license notices were regenerated from locked Windows Rust/runtime npm packages and upstream licenses, including the bundled WebView2 loader.
+
+## Initial desktop and core checks (retained)
 
 - Rust core compilation and Windows Tauri desktop compilation.
 - Provider SSE fragmentation, split UTF-8/CRLF, URL prefix handling, OAuth route request restrictions and incomplete-stream failure.
@@ -19,7 +29,7 @@ Verified locally on Windows x64, 1 November 2026. This ledger distinguishes actu
 - Ordinary non-Git folders show actual checkpoint changes. Loaded LM Studio context metadata and embedding filtering passed fixture checks.
 - MCP auth unit/fixture tests for metadata discovery, issuer/PKCE requirements, callback state/issuer/duplicate checks, destination binding, rotation and bearer storage/injection/removal.
 - Frontend TypeScript check and production build.
-- Full core suite: **33 passed, 0 failed**. Two entries are intentionally ignored: the internal subprocess helper and the Docker-daemon integration check. Workspace clippy passed with warnings denied; rustfmt passed. Production npm audit reported zero vulnerabilities.
+- Full core suite: **73 passed, 0 failed**. Two entries are intentionally ignored: the internal subprocess helper and the Docker-daemon integration check. Workspace clippy passed with warnings denied; rustfmt passed. Production npm audit reported zero vulnerabilities.
 - Generated Rust companion: optimized build and three generated-server tests passed. Real Rust and JavaScript stdio round trips calculated 1.25 + 2.75 = 4, and rejected unknown tools, methods and invalid/missing arguments. Python's actual tool round trip is also covered in the core integration suite.
 - CLI development watcher installed an actual changed skill source at an inactive turn boundary.
 - Actual browser workflows: connection save/manual model ID; project open; file browse/edit/save verified on disk; new task; combined plugin create/build/install/check/native handshake; skill source editing; ZIP creation; settings/diagnostics; 390px viewport without horizontal overflow.
@@ -32,7 +42,7 @@ Verified locally on Windows x64, 1 November 2026. This ledger distinguishes actu
 - Paid model access, live OpenAI/Anthropic/Gemini inference, an actual LM Studio model, and provider-specific coding quality depend on configured accounts/models. No user's API credential was borrowed from another application.
 - A live remote MCP OAuth account still needs user browser consent and eligible service configuration. Cryptographic/state/discovery tests are distinct from a successful live service authorization. ChatGPT sign-in was separately completed by the user as recorded above.
 - Docker execution needs Docker and its explicitly prepared image; no native fallback is used. Its live cleanup test was skipped because a daemon was unavailable. Explicit cleanup can still fail if the daemon is unreachable or the host exits during cleanup. Native process execution is not an OS security sandbox.
-- Public signing/automatic-update infrastructure and broad cross-platform releases are outside this Windows-first local release.
+- Broad cross-platform releases and a trusted Windows Authenticode publisher certificate are not established. Ed25519 manifest verification, digest checks and the exit-aware helper are implemented and tested; a full in-place self-update installation has not been exercised.
 
 ## Windows release
 

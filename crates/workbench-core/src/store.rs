@@ -16,7 +16,8 @@ impl Store {
             CREATE INDEX IF NOT EXISTS events_chat ON events(chat_id,id);
             CREATE INDEX IF NOT EXISTS messages_chat ON messages(chat_id);
             CREATE TABLE IF NOT EXISTS checkpoints(chat_id TEXT NOT NULL,path TEXT NOT NULL,before_text TEXT,after_text TEXT NOT NULL,PRIMARY KEY(chat_id,path));
-            PRAGMA user_version=1;")?;
+            CREATE INDEX IF NOT EXISTS usage_run ON entities(json_extract(data,'$.runId')) WHERE kind='usage';
+            PRAGMA user_version=2;")?;
         Ok(Self(Mutex::new(connection)))
     }
     pub fn put(&self, kind: &str, value: &Value) -> Result<()> {
@@ -47,6 +48,14 @@ impl Store {
             params![kind, id],
         )?;
         Ok(())
+    }
+    pub fn usage_for_run(&self, run: &str) -> Result<Vec<Value>> {
+        let connection = self.0.lock();
+        let mut statement=connection.prepare("SELECT data FROM entities WHERE kind='usage' AND json_extract(data,'$.runId')=?1 ORDER BY rowid")?;
+        statement
+            .query_map([run], |row| row.get::<_, String>(0))?
+            .map(|row| Ok(serde_json::from_str(&row?)?))
+            .collect()
     }
     pub fn message(&self, value: &Value) -> Result<()> {
         self.0.lock().execute(

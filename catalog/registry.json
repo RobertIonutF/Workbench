@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "plugins": [
+    {
+      "name": "release-preparation",
+      "description": "Prepare a reviewable release with version and artifact checks.",
+      "repository": "RobertIonutF/Workbench",
+      "tag": "v0.2.0",
+      "asset": "workbench-plugin-release-preparation-0.2.0.zip",
+      "sha256": "bd10fdc740a094a632c9c0ccd2abdb8af7f9684696ce425e8d222bdf5f67f8aa"
+    },
+    {
+      "name": "repository-review",
+      "description": "Review a codebase with file references and clear evidence.",
+      "repository": "RobertIonutF/Workbench",
+      "tag": "v0.2.0",
+      "asset": "workbench-plugin-repository-review-0.2.0.zip",
+      "sha256": "48862af9ebc828e29a861f08a67bc897027874942bea3778f5c30bf38738c840"
+    },
+    {
+      "name": "test-and-verify",
+      "description": "Run project checks and review changes against real results.",
+      "repository": "RobertIonutF/Workbench",
+      "tag": "v0.2.0",
+      "asset": "workbench-plugin-test-and-verify-0.2.0.zip",
+      "sha256": "bc329264a89653c7d7d4e1060153dbd981cc7392b43229742faacef593a873a2"
+    }
+  ]
+}

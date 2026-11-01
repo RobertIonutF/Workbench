@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, bail};
 use futures_util::StreamExt;
 use serde_json::{Value, json};
-use std::{path::Path, process::Stdio, time::Duration};
+use std::{path::Path, process::Stdio, sync::Arc, time::Duration};
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     process::{Child, ChildStdin, ChildStdout},
@@ -18,6 +18,9 @@ pub struct Session {
     sequence: u64,
     protocol: String,
     auth_headers: reqwest::header::HeaderMap,
+    logs: Arc<parking_lot::Mutex<Vec<String>>>,
+    capabilities: Value,
+    log_task: Option<tokio::task::JoinHandle<()>>,
 }
 impl Drop for Session {
     fn drop(&mut self) {
@@ -53,6 +56,9 @@ impl Session {
             sequence: 0,
             protocol: "2025-11-25".into(),
             auth_headers: reqwest::header::HeaderMap::new(),
+            logs: Arc::new(parking_lot::Mutex::new(Vec::new())),
+            capabilities: json!({}),
+            log_task: None,
         };
         if let Some(headers) = config["_workbenchHeaders"].as_object() {
             for (name, value) in headers {
@@ -134,7 +140,7 @@ impl Session {
                 .env("PLUGIN_DATA", data)
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
-                .stderr(Stdio::null())
+                .stderr(Stdio::piped())
                 .kill_on_drop(true);
             #[cfg(windows)]
             cmd.creation_flags(0x08000000);
@@ -143,6 +149,22 @@ impl Session {
                 .context("MCP process could not start; check its command, runtime and platform")?;
             this.stdin = child.stdin.take();
             this.stdout = child.stdout.take().map(BufReader::new);
+            if let Some(mut stderr) = child.stderr.take() {
+                let logs = this.logs.clone();
+                this.log_task = Some(tokio::spawn(async move {
+                    let mut chunk = [0u8; 2048];
+                    while let Ok(count) = stderr.read(&mut chunk).await {
+                        if count == 0 {
+                            break;
+                        }
+                        let mut buffer = logs.lock();
+                        buffer.push(String::from_utf8_lossy(&chunk[..count]).to_string());
+                        while buffer.len() > 128 {
+                            buffer.remove(0);
+                        }
+                    }
+                }));
+            }
             this.child = Some(child);
         } else if kind == "streamable-http" || kind == "http" {
             let url = url::Url::parse(config["url"].as_str().context("MCP server needs a URL")?)?;
@@ -162,6 +184,7 @@ impl Session {
             bail!("Unsupported MCP transport: {kind}; use stdio or Streamable HTTP")
         }
         let reply=this.call("initialize",json!({"protocolVersion":this.protocol,"capabilities":{},"clientInfo":{"name":"Workbench","version":env!("CARGO_PKG_VERSION")}}),cancel).await?;
+        this.capabilities = reply["capabilities"].clone();
         if let Some(version) = reply["protocolVersion"].as_str() {
             if ![
                 "2024-11-05",
@@ -179,6 +202,12 @@ impl Session {
         this.notify("notifications/initialized", json!({}), cancel)
             .await?;
         Ok(this)
+    }
+    pub fn capabilities(&self) -> &Value {
+        &self.capabilities
+    }
+    pub fn drain_logs(&self) -> Vec<String> {
+        std::mem::take(&mut *self.logs.lock())
     }
     pub async fn call(
         &mut self,
@@ -307,6 +336,13 @@ impl Session {
             }
             let _ = child.kill().await;
             let _ = child.wait().await;
+        }
+        if let Some(mut task) = self.log_task.take()
+            && tokio::time::timeout(Duration::from_millis(300), &mut task)
+                .await
+                .is_err()
+        {
+            task.abort();
         }
     }
     pub async fn tools(&mut self, cancel: &CancellationToken) -> Result<Vec<Value>> {

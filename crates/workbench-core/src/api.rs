@@ -23,6 +23,7 @@ pub async fn start(app: Arc<App>, port: u16, ui: Option<PathBuf>) -> Result<(Soc
     let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)).await?;
     let address = listener.local_addr()?;
     let token = app.token.clone();
+    crate::features::start_services(app.clone());
     crate::auth::set_secret(
         &app,
         "runtime",
@@ -107,18 +108,25 @@ async fn handle(State(app): State<Arc<App>>, request: Request<Body>) -> Response
         );
     }
     let result = async {
-        let bytes = to_bytes(request.into_body(), 2 * 1024 * 1024).await?;
+        let bytes = to_bytes(request.into_body(), 24 * 1024 * 1024).await?;
         let value = if bytes.is_empty() {
             json!({})
         } else {
             serde_json::from_slice(&bytes).context("Invalid request JSON")?
         };
-        dispatch(app, &method, &path, &query, value).await
+        dispatch(app.clone(), &method, &path, &query, value).await
     }
     .await;
     let response = match result {
         Ok(value) => axum::Json(value).into_response(),
-        Err(e) => error(StatusCode::BAD_REQUEST, &e.to_string()),
+        Err(e) => {
+            let safe =
+                crate::studio::redact(&json!(e.to_string()), &crate::studio::known_secrets(&app));
+            error(
+                StatusCode::BAD_REQUEST,
+                safe.as_str().unwrap_or("Request failed"),
+            )
+        }
     };
     cors(response, origin.as_deref())
 }
@@ -157,6 +165,17 @@ async fn dispatch(
     q: &HashMap<String, String>,
     mut value: Value,
 ) -> Result<Value> {
+    if *method != Method::GET && app.shutting_down.load(std::sync::atomic::Ordering::SeqCst) {
+        bail!("Workbench is shutting down");
+    }
+    if path.starts_with("studio/") {
+        return crate::studio::dispatch(app, method, path, q, value)
+            .await
+            .context("Unknown Studio endpoint")?;
+    }
+    if path.starts_with("features/") {
+        return crate::features::dispatch(app, method, path, q, value).await;
+    }
     let parts: Vec<&str> = path.split('/').collect();
     let get = *method == Method::GET;
     let post = *method == Method::POST;
@@ -171,7 +190,7 @@ async fn dispatch(
                         .store
                         .all("run")?
                         .iter()
-                        .any(|r| r["chatId"] == c["id"] && r["status"] == "running")
+                        .any(|r| r["chatId"] == c["id"] && crate::tasks::active(r))
                 {
                     bail!("Cancel the connection's active runs first")
                 }
@@ -226,7 +245,7 @@ async fn dispatch(
                 .store
                 .all("run")?
                 .iter()
-                .any(|r| r["chatId"] == *chat_id && r["status"] == "running")
+                .any(|r| r["chatId"] == *chat_id && crate::tasks::active(r))
             {
                 bail!("Wait for or cancel the active turn before changing its configuration")
             };
@@ -243,7 +262,7 @@ async fn dispatch(
                 .store
                 .all("run")?
                 .iter()
-                .any(|r| r["chatId"] == *chat_id && r["status"] == "running")
+                .any(|r| r["chatId"] == *chat_id && crate::tasks::active(r))
             {
                 bail!("Cancel this chat's active run before deleting it")
             };
@@ -286,13 +305,18 @@ async fn dispatch(
         }
         ["workspace", "file"] if *method == Method::PUT => {
             let project = app.store.get("project", query(q, "projectId"))?;
+            let chat_id = text(&value, "chatId");
+            if !chat_id.is_empty() && app.store.get("chat", chat_id)?["projectId"] != project["id"]
+            {
+                bail!("Task and file must belong to the same project");
+            }
             crate::workspace::write(
                 &app,
-                "",
+                chat_id,
                 Path::new(text(&project, "path")),
                 query(q, "path"),
                 text(&value, "content"),
-                None,
+                value["expectedContent"].as_str(),
             )?;
             Ok(json!({"ok":true}))
         }
@@ -319,12 +343,7 @@ async fn dispatch(
             crate::plugins::build(&app, Path::new(text(&value, "path"))).await
         }
         ["plugins", plugin_id, "auth"] if post => {
-            if app
-                .store
-                .all("run")?
-                .iter()
-                .any(|r| r["status"] == "running")
-            {
+            if app.store.all("run")?.iter().any(crate::tasks::active) {
                 bail!("Finish or cancel active runs before changing an MCP account");
             }
             crate::mcp_auth::save_key(
@@ -371,12 +390,7 @@ async fn dispatch(
             crate::plugins::install(&app, Path::new(text(&value, "path")), Some(plugin_id))
         }
         ["plugins", plugin_id, "rollback"] if post => {
-            if app
-                .store
-                .all("run")?
-                .iter()
-                .any(|r| r["status"] == "running")
-            {
+            if app.store.all("run")?.iter().any(crate::tasks::active) {
                 bail!("Finish active runs before rollback")
             };
             let old = app.store.get("plugin", plugin_id)?;

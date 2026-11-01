@@ -22,6 +22,8 @@ pub struct Message {
     pub tool_call_id: Option<String>,
     #[serde(default)]
     pub native: Vec<Value>,
+    #[serde(default)]
+    pub images: Vec<Value>,
 }
 impl Message {
     pub fn new(role: &str, content: String) -> Self {
@@ -31,6 +33,7 @@ impl Message {
             tool_calls: vec![],
             tool_call_id: None,
             native: vec![],
+            images: vec![],
         }
     }
 }
@@ -52,7 +55,7 @@ async fn request(app: &App, connection: &Value, path: &str) -> Result<reqwest::R
     if connection["authKind"] == "openai_oauth" {
         request = request.bearer_auth(crate::auth::access_token(app, connection).await?);
     } else if connection["secretPresent"] == true && connection["authKind"] != "none" {
-        let key = crate::auth::get_secret(app, text(connection, "id"))?;
+        let key = crate::auth::api_key(app, connection)?;
         if connection["protocol"] == "anthropic" {
             request = request.header("x-api-key", key);
         } else if connection["protocol"] == "gemini" {
@@ -72,7 +75,7 @@ pub async fn models(app: &App, connection: &Value) -> Result<Value> {
     if connection["authKind"] == "openai_oauth" {
         req = req.bearer_auth(crate::auth::access_token(app, connection).await?);
     } else if connection["secretPresent"] == true && connection["authKind"] != "none" {
-        let secret = crate::auth::get_secret(app, text(connection, "id"))?;
+        let secret = crate::auth::api_key(app, connection)?;
         req = if connection["protocol"] == "anthropic" {
             req.header("x-api-key", secret)
                 .header("anthropic-version", "2023-06-01")
@@ -126,7 +129,7 @@ async fn enrich_lm_catalog(app: &App, connection: &Value, items: &mut Vec<Value>
             .get(management)
             .timeout(std::time::Duration::from_secs(5));
         if connection["secretPresent"] == true && connection["authKind"] != "none" {
-            request = request.bearer_auth(crate::auth::get_secret(app, text(connection, "id"))?);
+            request = request.bearer_auth(crate::auth::api_key(app, connection)?);
         }
         let native: Value = request.send().await?.error_for_status()?.json().await?;
         let models = native["models"]
@@ -194,6 +197,9 @@ pub fn body(
                 if !m.content.is_empty() {
                     blocks.push(json!({"type":"text","text":m.content}));
                 }
+                for image in &m.images {
+                    blocks.push(json!({"type":"image","source":{"type":"base64","media_type":image["mime"],"data":image["dataBase64"]}}));
+                }
                 for t in &m.tool_calls {
                     blocks.push(json!({"type":"tool_use","id":t.id,"name":t.name,"input":serde_json::from_str::<Value>(&t.arguments)?}));
                 }
@@ -220,8 +226,16 @@ pub fn body(
                         .filter(|v| v["type"] == "reasoning" || v["type"] == "function_call")
                         .cloned(),
                 );
-                if !m.content.is_empty() {
-                    input.push(json!({"role":m.role,"content":m.content}));
+                if !m.content.is_empty() || !m.images.is_empty() {
+                    if m.images.is_empty() {
+                        input.push(json!({"role":m.role,"content":m.content}));
+                    } else {
+                        let mut content = vec![json!({"type":"input_text","text":m.content})];
+                        for image in &m.images {
+                            content.push(json!({"type":"input_image","image_url":format!("data:{};base64,{}",text(image,"mime"),text(image,"dataBase64"))}));
+                        }
+                        input.push(json!({"role":m.role,"content":content}));
+                    }
                 }
                 for t in &m.tool_calls {
                     if m.native
@@ -246,16 +260,33 @@ pub fn body(
         return Ok(("responses".into(), payload));
     } else if protocol == "gemini" {
         let mut contents = Vec::new();
+        let mut call_names = std::collections::HashMap::new();
         for m in messages {
+            for call in &m.tool_calls {
+                call_names.insert(call.id.as_str(), call.name.as_str());
+            }
             let mut parts = Vec::new();
             if m.role == "tool" {
-                parts.push(json!({"functionResponse":{"name":m.tool_call_id.as_deref().unwrap_or("tool"),"response":{"result":m.content}}}));
+                parts.push(json!({"functionResponse":{"name":m.tool_call_id.as_deref().and_then(|identity|call_names.get(identity).copied()).unwrap_or("tool"),"response":{"result":m.content}}}));
             } else {
-                if !m.content.is_empty() {
-                    parts.push(json!({"text":m.content}));
-                }
-                for t in &m.tool_calls {
-                    parts.push(json!({"functionCall":{"name":t.name,"args":serde_json::from_str::<Value>(&t.arguments)?}}));
+                let native: Vec<Value> = m
+                    .native
+                    .iter()
+                    .filter(|p| p["type"] == "gemini_part")
+                    .map(|p| p["part"].clone())
+                    .collect();
+                if !native.is_empty() {
+                    parts.extend(native);
+                } else {
+                    if !m.content.is_empty() {
+                        parts.push(json!({"text":m.content}));
+                    }
+                    for image in &m.images {
+                        parts.push(json!({"inlineData":{"mimeType":image["mime"],"data":image["dataBase64"]}}));
+                    }
+                    for t in &m.tool_calls {
+                        parts.push(json!({"functionCall":{"name":t.name,"args":serde_json::from_str::<Value>(&t.arguments)?}}));
+                    }
                 }
             }
             contents
@@ -277,6 +308,13 @@ pub fn body(
     let mut list = vec![json!({"role":"system","content":system})];
     for m in messages {
         let mut item = json!({"role":m.role,"content":m.content});
+        if !m.images.is_empty() {
+            let mut content = vec![json!({"type":"text","text":m.content})];
+            for image in &m.images {
+                content.push(json!({"type":"image_url","image_url":{"url":format!("data:{};base64,{}",text(image,"mime"),text(image,"dataBase64"))}}));
+            }
+            item["content"] = json!(content);
+        }
         if m.role == "tool" {
             item["tool_call_id"] = json!(m.tool_call_id);
         }
@@ -301,6 +339,81 @@ pub fn body(
 pub struct SseParser {
     buffer: Vec<u8>,
     data: Vec<String>,
+}
+
+fn apply_model_settings(connection: &Value, payload: &mut Value) -> Result<()> {
+    if connection["authKind"] == "openai_oauth" {
+        return Ok(());
+    }
+    let max = connection["maxOutputTokens"].as_u64();
+    let temperature = connection["temperature"].as_f64();
+    let effort = text(connection, "reasoningEffort");
+    match text(connection, "protocol") {
+        "anthropic" => {
+            if let Some(max) = max {
+                payload["max_tokens"] = json!(max);
+            }
+            if let Some(temperature) = temperature {
+                payload["temperature"] = json!(temperature);
+            }
+            if !effort.is_empty() && effort != "none" {
+                let budget = match effort {
+                    "minimal" | "low" => 1024,
+                    "medium" => 4096,
+                    _ => 8192,
+                };
+                if max.unwrap_or(4096) <= budget {
+                    bail!(
+                        "Anthropic thinking budget must be smaller than the profile's maximum output tokens"
+                    );
+                }
+                payload["thinking"] = json!({"type":"enabled","budget_tokens":budget});
+                payload.as_object_mut().unwrap().remove("temperature");
+            }
+        }
+        "gemini" => {
+            let mut config = json!({});
+            if let Some(max) = max {
+                config["maxOutputTokens"] = json!(max);
+            }
+            if let Some(t) = temperature {
+                config["temperature"] = json!(t);
+            }
+            if !effort.is_empty() {
+                config["thinkingConfig"] = json!({"thinkingBudget":match effort{"none"=>0,"minimal"|"low"=>1024,"medium"=>4096,_=>8192}});
+            }
+            if config.as_object().is_some_and(|v| !v.is_empty()) {
+                payload["generationConfig"] = config;
+            }
+        }
+        "openai_responses" => {
+            if let Some(max) = max {
+                payload["max_output_tokens"] = json!(max);
+            }
+            if let Some(t) = temperature {
+                payload["temperature"] = json!(t);
+            }
+            if !effort.is_empty() {
+                payload["reasoning"] = json!({"effort":effort});
+            }
+        }
+        _ => {
+            if let Some(max) = max {
+                payload[if connection["preset"] == "openai" {
+                    "max_completion_tokens"
+                } else {
+                    "max_tokens"
+                }] = json!(max);
+            }
+            if let Some(t) = temperature {
+                payload["temperature"] = json!(t);
+            }
+            if !effort.is_empty() {
+                payload["reasoning_effort"] = json!(effort);
+            }
+        }
+    }
+    Ok(())
 }
 impl SseParser {
     pub fn push(&mut self, bytes: &[u8]) -> Result<Vec<String>> {
@@ -335,7 +448,8 @@ pub async fn generate(
     cancel: &CancellationToken,
     mut on_text: impl FnMut(&str),
 ) -> Result<Generation> {
-    let (path, payload) = body(connection, model, system, messages, tools)?;
+    let (path, mut payload) = body(connection, model, system, messages, tools)?;
+    apply_model_settings(connection, &mut payload)?;
     let response = tokio::select! {r=request(app,connection,&path).await?.json(&payload).timeout(std::time::Duration::from_secs(600)).send()=>r?,_=cancel.cancelled()=>bail!("Canceled")};
     if !response.status().is_success() {
         let status = response.status();
@@ -357,11 +471,17 @@ pub async fn generate(
     let mut generation = Generation::default();
     let mut calls: BTreeMap<usize, ToolCall> = BTreeMap::new();
     let mut completed = false;
+    let mut stream_bytes = 0usize;
     let mut native_blocks: BTreeMap<usize, Value> = BTreeMap::new();
     loop {
         let chunk = tokio::select! {v=stream.next()=>v,_=cancel.cancelled()=>bail!("Canceled")};
         let Some(chunk) = chunk else { break };
-        for raw in parser.push(&chunk?)? {
+        let chunk = chunk?;
+        stream_bytes += chunk.len();
+        if stream_bytes > 32 * 1024 * 1024 {
+            bail!("Provider stream exceeded the 32 MiB response limit");
+        }
+        for raw in parser.push(&chunk)? {
             if raw == "[DONE]" {
                 completed = true;
                 continue;
@@ -477,7 +597,26 @@ pub async fn generate(
                                 _ => {}
                             }
                         }
-                        "message_delta" => generation.usage = event["usage"].clone(),
+                        "message_start" => generation.usage = event["message"]["usage"].clone(),
+                        "message_delta" => {
+                            if matches!(
+                                text(&event["delta"], "stop_reason"),
+                                "max_tokens" | "pause_turn"
+                            ) {
+                                bail!(
+                                    "Provider ended before completing the turn: {}",
+                                    text(&event["delta"], "stop_reason")
+                                );
+                            }
+                            if let Some(fields) = event["usage"].as_object() {
+                                if !generation.usage.is_object() {
+                                    generation.usage = json!({});
+                                }
+                                for (key, value) in fields {
+                                    generation.usage[key] = value.clone();
+                                }
+                            }
+                        }
                         "message_stop" => completed = true,
                         _ => {}
                     }
@@ -485,7 +624,12 @@ pub async fn generate(
                 "gemini" => {
                     if let Some(parts) = event["candidates"][0]["content"]["parts"].as_array() {
                         for part in parts {
-                            if let Some(t) = part["text"].as_str() {
+                            generation
+                                .native
+                                .push(json!({"type":"gemini_part","part":part}));
+                            if part["thought"] != true
+                                && let Some(t) = part["text"].as_str()
+                            {
                                 delta.push_str(t);
                             }
                             if part["functionCall"].is_object() {
@@ -493,7 +637,11 @@ pub async fn generate(
                                 calls.insert(
                                     calls.len(),
                                     ToolCall {
-                                        id: text(f, "name").into(),
+                                        id: if text(f, "id").is_empty() {
+                                            format!("gemini_{}", crate::app::id())
+                                        } else {
+                                            text(f, "id").into()
+                                        },
                                         name: text(f, "name").into(),
                                         arguments: f["args"].to_string(),
                                     },
@@ -501,7 +649,10 @@ pub async fn generate(
                             }
                         }
                     }
-                    if !event["candidates"][0]["finishReason"].is_null() {
+                    if let Some(reason) = event["candidates"][0]["finishReason"].as_str() {
+                        if reason != "STOP" {
+                            bail!("Gemini ended before a successful completion: {reason}");
+                        }
                         completed = true;
                     }
                     if event["usageMetadata"].is_object() {
@@ -527,7 +678,10 @@ pub async fn generate(
                                 .push_str(text(&item["function"], "arguments"));
                         }
                     }
-                    if !choice["finish_reason"].is_null() {
+                    if let Some(reason) = choice["finish_reason"].as_str() {
+                        if !["stop", "tool_calls", "function_call"].contains(&reason) {
+                            bail!("Provider ended before a successful completion: {reason}");
+                        }
                         completed = true;
                     }
                     if event["usage"].is_object() {
@@ -548,6 +702,9 @@ pub async fn generate(
         bail!("Provider stream disconnected before a terminal completion event")
     }
     generation.tools = calls.into_values().collect();
+    if generation.tools.len() > 128 {
+        bail!("Provider returned more than 128 tool requests in one step");
+    }
     for call in &mut generation.tools {
         if call.arguments.is_empty() {
             call.arguments = "{}".into();
@@ -562,12 +719,24 @@ pub async fn generate(
             .context("Provider returned invalid tool arguments")?;
     }
     generation.native.extend(native_blocks.into_values());
+    if generation.text.is_empty() && generation.tools.is_empty() {
+        bail!("Provider completed without text or supported tool calls");
+    }
     Ok(generation)
 }
 pub async fn probe(app: &App, connection: &Value, model: &str) -> Result<Value> {
     let cancel = CancellationToken::new();
+    probe_with_cancel(app, connection, model, &cancel).await
+}
+pub(crate) async fn probe_with_cancel(
+    app: &App,
+    connection: &Value,
+    model: &str,
+    cancel: &CancellationToken,
+) -> Result<Value> {
+    let probe_id = format!("probe:{}", crate::app::id());
     let mut chunks = 0;
-    let reply = generate(
+    let reply = probe_generate(
         app,
         connection,
         model,
@@ -577,7 +746,8 @@ pub async fn probe(app: &App, connection: &Value, model: &str) -> Result<Value> 
             "Say Workbench connection verified.".into(),
         )],
         &[],
-        &cancel,
+        cancel,
+        &probe_id,
         |_| chunks += 1,
     )
     .await?;
@@ -586,7 +756,7 @@ pub async fn probe(app: &App, connection: &Value, model: &str) -> Result<Value> 
         "user",
         "Use the connection_echo tool with text verified.".into(),
     )];
-    let tool_result = generate(app, connection, model, "Test structured tools: call connection_echo exactly once, then acknowledge its returned result.", &history, std::slice::from_ref(&echo), &cancel, |_| {}).await;
+    let tool_result = probe_generate(app, connection, model, "Test structured tools: call connection_echo exactly once, then acknowledge its returned result.", &history, std::slice::from_ref(&echo), cancel, &probe_id, |_| {}).await;
     let mut diagnostics = Vec::new();
     let mut tools = false;
     match tool_result {
@@ -601,7 +771,7 @@ pub async fn probe(app: &App, connection: &Value, model: &str) -> Result<Value> 
                 let mut result = Message::new("tool", json!({"echo":args["text"]}).to_string());
                 result.tool_call_id = Some(call.id.clone());
                 history.push(result);
-                match generate(app, connection, model, "The test tool has returned. Acknowledge its result briefly without making another tool call.", &history, std::slice::from_ref(&echo), &cancel, |_| {}).await {
+                match probe_generate(app, connection, model, "The test tool has returned. Acknowledge its result briefly without making another tool call.", &history, std::slice::from_ref(&echo), cancel, &probe_id, |_| {}).await {
                     Ok(final_result) => tools = final_result.tools.is_empty() && !final_result.text.is_empty(),
                     Err(error) => diagnostics.push(format!("Tool-result continuation failed: {error}")),
                 }
@@ -613,6 +783,76 @@ pub async fn probe(app: &App, connection: &Value, model: &str) -> Result<Value> 
     Ok(
         json!({"text":!reply.text.is_empty(),"streaming":chunks>0,"tools":tools,"reply":reply.text,"diagnostics":diagnostics}),
     )
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn probe_generate(
+    app: &App,
+    connection: &Value,
+    model: &str,
+    system: &str,
+    messages: &[Message],
+    tools: &[Value],
+    cancel: &CancellationToken,
+    probe_id: &str,
+    mut on_text: impl FnMut(&str),
+) -> Result<Generation> {
+    let started = std::time::Instant::now();
+    let mut first = None;
+    let mut output = 0usize;
+    let result = generate(
+        app,
+        connection,
+        model,
+        system,
+        messages,
+        tools,
+        cancel,
+        |delta| {
+            if first.is_none() {
+                first = Some(started.elapsed().as_millis() as u64);
+            }
+            output += delta.len();
+            on_text(delta);
+        },
+    )
+    .await;
+    let input = system.len()
+        + messages
+            .iter()
+            .map(|m| {
+                m.content.len()
+                    + m.tool_calls
+                        .iter()
+                        .map(|t| t.arguments.len())
+                        .sum::<usize>()
+            })
+            .sum::<usize>()
+        + serde_json::to_vec(tools)?.len();
+    let usage = result
+        .as_ref()
+        .map(|g| g.usage.clone())
+        .unwrap_or(Value::Null);
+    if let Ok(generation) = &result {
+        output += generation
+            .tools
+            .iter()
+            .map(|t| t.arguments.len())
+            .sum::<usize>();
+    }
+    crate::models::record_usage(
+        app,
+        probe_id,
+        "",
+        connection,
+        model,
+        &usage,
+        input.div_ceil(4) as u64,
+        output.div_ceil(4) as u64,
+        started.elapsed().as_millis() as u64,
+        first,
+    )?;
+    result
 }
 
 #[cfg(test)]
@@ -649,5 +889,63 @@ mod tests {
         assert_eq!(b["stream"], true);
         assert!(b.get("temperature").is_none());
         assert!(b.get("previous_response_id").is_none());
+    }
+    #[test]
+    fn images_are_translated_for_all_supported_provider_dialects() {
+        let mut message = Message::new("user", "Inspect the image".into());
+        message.images = vec![json!({"mime":"image/png","dataBase64":"fixture-image"})];
+        for protocol in ["openai_chat", "openai_responses", "anthropic", "gemini"] {
+            let (_, payload) = body(
+                &json!({"protocol":protocol}),
+                "model",
+                "system",
+                &[message.clone()],
+                &[],
+            )
+            .unwrap();
+            let serialized = payload.to_string();
+            assert!(
+                serialized.contains("fixture-image"),
+                "{protocol}: {serialized}"
+            );
+            assert!(serialized.contains("image/png"), "{protocol}: {serialized}");
+        }
+    }
+    #[test]
+    fn oauth_request_defaults_survive_profile_budget_and_sampling_settings() {
+        let connection = json!({"protocol":"openai_responses","authKind":"openai_oauth","temperature":0.5,"reasoningEffort":"high","maxOutputTokens":17});
+        let (_, mut payload) = body(&connection, "model", "system", &[], &[]).unwrap();
+        apply_model_settings(&connection, &mut payload).unwrap();
+        assert!(payload.get("temperature").is_none());
+        assert!(payload.get("max_output_tokens").is_none());
+        assert!(payload.get("reasoning").is_none());
+    }
+    #[test]
+    fn gemini_continuation_replays_signed_parts_and_actual_function_names() {
+        let mut assistant = Message::new("assistant", String::new());
+        assistant.tool_calls.push(ToolCall {
+            id: "unique-call".into(),
+            name: "read_file".into(),
+            arguments: "{}".into(),
+        });
+        assistant.native.push(json!({"type":"gemini_part","part":{"functionCall":{"name":"read_file","args":{}},"thoughtSignature":"opaque-signature"}}));
+        let mut tool = Message::new("tool", "actual result".into());
+        tool.tool_call_id = Some("unique-call".into());
+        let (_, payload) = body(
+            &json!({"protocol":"gemini"}),
+            "model",
+            "system",
+            &[assistant, tool],
+            &[],
+        )
+        .unwrap();
+        assert_eq!(
+            payload["contents"][0]["parts"][0]["thoughtSignature"],
+            "opaque-signature"
+        );
+        assert_eq!(
+            payload["contents"][1]["parts"][0]["functionResponse"]["name"],
+            "read_file"
+        );
     }
 }

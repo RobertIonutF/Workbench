@@ -25,6 +25,10 @@ pub struct App {
     pub oauth: Mutex<HashMap<String, Value>>,
     pub token: String,
     pub refresh_lock: tokio::sync::Mutex<()>,
+    pub services_started: std::sync::atomic::AtomicBool,
+    pub scheduler_lock: tokio::sync::Mutex<()>,
+    pub run_start_lock: Mutex<()>,
+    pub shutting_down: std::sync::atomic::AtomicBool,
 }
 impl App {
     pub async fn new(directory: Option<PathBuf>) -> Result<Arc<Self>> {
@@ -43,6 +47,7 @@ impl App {
             .truncate(false)
             .open(data_dir.join("workbench.lock"))?;
         data_lock.try_lock().context("This Workbench data directory is already in use. Reuse the running app or choose a separate --data-dir for a second runtime.")?;
+        crate::studio::apply_pending_restore(&data_dir)?;
         let app = Arc::new(Self {
             _data_lock: data_lock,
             store: crate::store::Store::open(&data_dir.join("workbench.sqlite"))?,
@@ -56,9 +61,13 @@ impl App {
             oauth: Mutex::new(HashMap::new()),
             token: format!("{}{}", id(), id()),
             refresh_lock: tokio::sync::Mutex::new(()),
+            services_started: std::sync::atomic::AtomicBool::new(false),
+            scheduler_lock: tokio::sync::Mutex::new(()),
+            run_start_lock: Mutex::new(()),
+            shutting_down: std::sync::atomic::AtomicBool::new(false),
         });
         for mut run in app.store.all("run")? {
-            if run["status"] == "running" {
+            if run["status"] == "running" || run["status"] == "paused" {
                 run["status"] = json!("interrupted");
                 run["error"] = json!(
                     "Workbench stopped before this run finished. Review tool results before resuming."
@@ -82,10 +91,19 @@ impl App {
                 &json!({"id":"host","hostId":format!("urn:uuid:{}",id())}),
             )?;
         }
+        crate::features::recover(&app)?;
         Ok(app)
     }
     pub fn settings(&self) -> Value {
         self.store.get("settings", "settings").unwrap_or(json!({}))
+    }
+    pub fn begin_shutdown(&self) {
+        let _guard = self.run_start_lock.lock();
+        self.shutting_down
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        for cancel in self.runs.lock().values() {
+            cancel.cancel();
+        }
     }
     pub fn cancel_plugin_runs(&self, plugin_id: &str) -> Result<()> {
         let chats: Vec<Value> = self
@@ -109,9 +127,42 @@ impl App {
         Ok(())
     }
     pub fn state(&self) -> Result<Value> {
-        Ok(
-            json!({"connections":self.store.all("connection")?,"projects":self.store.all("project")?,"chats":self.store.all("chat")?,"plugins":self.store.all("plugin")?,"runs":self.store.all("run")?,"approvals":self.store.all("approval")?,"settings":self.settings(),"version":env!("CARGO_PKG_VERSION")}),
-        )
+        let mut value = json!({"connections":self.store.all("connection")?,"projects":self.store.all("project")?,"chats":self.store.all("chat")?,"plugins":self.store.all("plugin")?,"runs":self.store.all("run")?,"approvals":self.store.all("approval")?,"settings":self.settings(),"version":env!("CARGO_PKG_VERSION")});
+        value["terminals"] = json!(crate::terminal::state(self)?);
+        for kind in [
+            "profile",
+            "usage",
+            "memory",
+            "hook",
+            "schedule",
+            "notification",
+            "comparison",
+            "worktree",
+            "team",
+            "attachment",
+        ] {
+            value[match kind {
+                "usage" => "usage".to_owned(),
+                "memory" => "memories".to_owned(),
+                _ => format!("{kind}s"),
+            }] = json!(
+                self.store
+                    .all(kind)?
+                    .into_iter()
+                    .map(|mut item| {
+                        if kind == "attachment"
+                            && let Some(map) = item.as_object_mut()
+                        {
+                            map.remove("dataBase64");
+                            map.remove("content");
+                        }
+                        item
+                    })
+                    .collect::<Vec<_>>()
+            );
+        }
+        value["queue"] = json!({"turns":self.store.all("queued_turn")?.into_iter().filter(|m|m["status"]=="queued"||m["status"]=="starting").collect::<Vec<_>>(),"steering":self.store.all("steering")?.into_iter().filter(|m|m["status"]=="queued").collect::<Vec<_>>()});
+        Ok(value)
     }
     pub fn connection(&self, mut v: Value) -> Result<Value> {
         let connection_id = if text(&v, "id").is_empty() {
@@ -130,7 +181,7 @@ impl App {
                     .all("run")
                     .unwrap_or_default()
                     .iter()
-                    .any(|r| r["chatId"] == c["id"] && r["status"] == "running")
+                    .any(|r| r["chatId"] == c["id"] && crate::tasks::active(r))
         }) {
             bail!("Finish or cancel active runs before changing their model connection");
         }
@@ -191,7 +242,7 @@ impl App {
             secret_present = false;
         }
         if !new_secret.is_empty() {
-            crate::auth::set_secret(self, &connection_id, &new_secret)?;
+            crate::auth::set_secret(self, &connection_id, &json!({"workbenchCredential":"api-key-v2","destination":v["baseUrl"],"protocol":v["protocol"],"apiKey":new_secret}).to_string())?;
             secret_present = true;
         }
         if let Some(map) = v.as_object_mut() {
@@ -241,6 +292,11 @@ impl App {
         Ok(value)
     }
     pub fn chat(&self, mut v: Value) -> Result<Value> {
+        if !text(&v, "profileId").is_empty() {
+            let profile = self.store.get("profile", text(&v, "profileId"))?;
+            v["connectionId"] = profile["connectionId"].clone();
+            v["modelId"] = profile["modelId"].clone();
+        }
         if text(&v, "connectionId").is_empty() {
             bail!("Choose a model connection first")
         };

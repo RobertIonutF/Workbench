@@ -11,3 +11,10 @@ pub mod store;
 pub mod workspace;
 
 pub use app::App;
+pub mod context;
+pub mod features;
+pub mod models;
+pub mod studio;
+pub mod tasks;
+pub mod terminal;
+pub mod worktrees;

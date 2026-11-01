@@ -122,6 +122,25 @@ pub fn get_secret(app: &App, key: &str) -> Result<String> {
         Ok(keyring::Entry::new("Workbench", key)?.get_password()?)
     }
 }
+pub fn api_key(app: &App, connection: &Value) -> Result<String> {
+    let stored = get_secret(app, text(connection, "id"))?;
+    if let Ok(value) = serde_json::from_str::<Value>(&stored)
+        && value["workbenchCredential"] == "api-key-v2"
+    {
+        if value["destination"] != connection["baseUrl"]
+            || value["protocol"] != connection["protocol"]
+        {
+            bail!("Credential destination changed; reconnect this endpoint before using it");
+        }
+        return Ok(text(&value, "apiKey").into());
+    }
+    let current = app.store.get("connection", text(connection, "id"))?;
+    if current["baseUrl"] != connection["baseUrl"] || current["protocol"] != connection["protocol"]
+    {
+        bail!("Connection changed while this request was being prepared");
+    }
+    Ok(stored)
+}
 pub fn delete_secret(app: &App, key: &str) -> Result<()> {
     #[cfg(windows)]
     {

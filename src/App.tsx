@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useState } from 'react';
 import { ArrowRight, Check, CircleHelp, Code2, Folder, FolderPlus, Layers3, LoaderCircle, Menu, MessageSquare, Plus, Plug, RefreshCw, Settings2, TerminalSquare, X } from 'lucide-react';
 import { api, del, enc, errorText, post } from './api';
 import { Badge, Button, ErrorNotice, IconButton, Modal, PathInput } from './components';
@@ -7,8 +7,10 @@ import Connections from './Connections';
 import Plugins from './Plugins';
 import Settings from './Settings';
 import Workspace from './Workspace';
+const ControlPanel = lazy(() => import('./ControlPanel'));
+const Studio = lazy(() => import('./Studio'));
 
-const pageNames: Record<Page, string> = { workspace: 'Workspace', connections: 'Connections', plugins: 'Plugins', settings: 'Settings' };
+const pageNames: Record<Page, string> = { workspace: 'Workspace', connections: 'Connections', plugins: 'Plugins', settings: 'Settings', control:'Control center',studio:'Plugin Studio' };
 
 export default function App() {
   const [state, setState] = useState<AppState | null>(null);
@@ -79,7 +81,8 @@ export default function App() {
     if (!connection) { setPage('connections'); notify('Connect a model to start your first task.'); return; }
     setBusy('new-chat');
     try {
-      const chat = await post<Chat>('/api/chats', { title: 'New chat', projectId: projectId || undefined, connectionId: connection.id, modelId: connection.modelId, pluginIds: [], skillIds: [], executionMode: 'ask' });
+      const preferredProfile = state?.profiles?.find(p=>p.connectionId===connection.id);
+      const chat = await post<Chat>('/api/chats', { profileId:preferredProfile?.id, title: 'New chat', projectId: projectId || undefined, connectionId: connection.id, modelId: connection.modelId, pluginIds: [], skillIds: [], executionMode: 'ask' });
       await refresh(); setChatId(chat.id); setPage('workspace'); setSidebarOpen(false);
     } catch (e) { setError(errorText(e)); } finally { setBusy(''); }
   }
@@ -102,21 +105,25 @@ export default function App() {
         <button className={page === 'workspace' ? 'selected' : ''} onClick={() => { setPage('workspace'); setSidebarOpen(false); }}><Layers3 size={17} />Workspace{pending > 0 && <span className="count amber">{pending}</span>}</button>
         <button className={page === 'connections' ? 'selected' : ''} onClick={() => { setPage('connections'); setSidebarOpen(false); }}><Plug size={17} />Connections<span className="count">{state?.connections.length || 0}</span></button>
         <button className={page === 'plugins' ? 'selected' : ''} onClick={() => { setPage('plugins'); setSidebarOpen(false); }}><Layers3 size={17} />Plugins<span className="count">{state?.plugins.length || 0}</span></button>
+        <button className={page === 'studio' ? 'selected' : ''} onClick={() => {setPage('studio');setSidebarOpen(false);}}><Code2 size={17}/>Plugin Studio</button>
+        <button className={page === 'control' ? 'selected' : ''} onClick={() => {setPage('control');setSidebarOpen(false);}}><TerminalSquare size={17}/>Control center{(state?.notifications?.filter(n=>!n.read).length||0)>0&&<span className="count amber">{state?.notifications?.filter(n=>!n.read).length}</span>}</button>
       </nav>
       <div className="sidebar-section-label"><span>PROJECTS</span><IconButton label="Open project" onClick={() => setProjectModal(true)}><Plus size={14} /></IconButton></div>
       <div className="project-list"><button className={`project-button ${!projectId ? 'active' : ''}`} onClick={() => { setProjectId(''); setChatId(null); setPage('workspace'); setSidebarOpen(false); }}><Folder size={15} /><span>All projects</span></button>{state?.projects.map((p) => <button className={`project-button ${projectId === p.id ? 'active' : ''}`} key={p.id} title={p.path} onClick={() => { setProjectId(p.id); setChatId(null); setPage('workspace'); setSidebarOpen(false); }}><Folder size={15} /><span>{p.name}</span></button>)}{state?.projects.length === 0 && <button className="sidebar-empty-link" onClick={() => setProjectModal(true)}><FolderPlus size={14} />Open a local folder</button>}</div>
       <div className="sidebar-section-label"><span>RECENT TASKS</span><span className="muted-text">{filteredChats.length}</span></div>
-      <div className="chat-list">{filteredChats.length === 0 ? <p className="sidebar-hint">Your tasks will live here.<br />Start with a question or a project.</p> : filteredChats.map((chat) => <div className={`chat-item ${chat.id === chatId && page === 'workspace' ? 'active' : ''}`} key={chat.id}><button onClick={() => { setChatId(chat.id); setConnectionId(chat.connectionId); setPage('workspace'); setSidebarOpen(false); }}><MessageSquare size={14} /><span>{chat.title}</span>{state?.runs.some((r) => r.chatId === chat.id && r.status === 'running') && <span className="running-dot" />}</button><IconButton label={`Delete ${chat.title}`} onClick={() => void removeChat(chat)}><X size={12} /></IconButton></div>)}</div>
+      <div className="chat-list">{filteredChats.length === 0 ? <p className="sidebar-hint">Your tasks will live here.<br />Start with a question or a project.</p> : filteredChats.map((chat) => <div className={`chat-item ${chat.id === chatId && page === 'workspace' ? 'active' : ''}`} key={chat.id}><button onClick={() => { setChatId(chat.id); setConnectionId(chat.connectionId); setPage('workspace'); setSidebarOpen(false); }}><MessageSquare size={14} /><span>{chat.title}</span>{state?.runs.some((r) => r.chatId === chat.id && ['running','paused'].includes(r.status)) && <span className="running-dot" />}</button><IconButton label={`Delete ${chat.title}`} onClick={() => void removeChat(chat)}><X size={12} /></IconButton></div>)}</div>
       <div className="sidebar-footer"><button className={page === 'settings' ? 'selected' : ''} onClick={() => { setPage('settings'); setSidebarOpen(false); }}><Settings2 size={16} />Settings & diagnostics</button><div className="local-status"><span className={`status-dot ${state && !networkError ? 'online' : ''}`} />{state && !networkError ? 'Local runtime connected' : 'Connecting to local runtime'}<span>{state ? `v${state.version}` : ''}</span></div></div>
     </aside>
     <main className="main-shell" inert={narrow && sidebarOpen}>
       <header className="topbar"><div className="breadcrumbs"><IconButton label="Toggle navigation" className="mobile-menu" onClick={() => setSidebarOpen(!sidebarOpen)}><Menu size={18} /></IconButton><span>{pageNames[page]}</span>{page === 'workspace' && <><span className="breadcrumb-slash">/</span><strong>{activeProject?.name || 'Personal workspace'}</strong></>}</div><div className="topbar-actions"><span className="local-only"><span className="status-dot online" />Local first</span><IconButton label="Refresh workspace state" onClick={() => void refresh().catch((e) => setError(errorText(e)))}><RefreshCw size={15} /></IconButton></div></header>
       {(error || networkError) && <div className="global-error"><ErrorNotice onDismiss={() => setError('')}>{error || networkError}</ErrorNotice></div>}
       {!state ? <div className="bootstrap"><span className="brand-mark large"><Code2 size={32} /></span><h1>Make room for good work.</h1><p>{(error || networkError) ? 'The interface is ready. Connect the local Rust runtime to continue.' : 'Connecting to your local workspace…'}</p>{!error && !networkError && <LoaderCircle className="spin" size={20} />}{(error || networkError) && <Button onClick={() => void refresh().catch((e) => setError(errorText(e)))}><RefreshCw size={15} />Try again</Button>}<span className="bootstrap-note"><TerminalSquare size={14} />Start the Workbench server or launch the desktop application.</span></div> : <>
-        {page === 'workspace' && <Workspace state={state} chat={activeChat} project={activeProject} selectedConnection={connectionId} onConnectionChange={setConnectionId} onCreateChat={newChat} creating={busy === 'new-chat'} onOpenProject={() => setProjectModal(true)} onConnections={() => setPage('connections')} refresh={refresh} notify={notify} />}
+        {page === 'workspace' && <Workspace state={state} chat={activeChat} project={activeProject} selectedConnection={connectionId} onConnectionChange={setConnectionId} onCreateChat={newChat} creating={busy === 'new-chat'} onOpenProject={() => setProjectModal(true)} onConnections={() => setPage('connections')} refresh={refresh} notify={notify} onSelectChat={setChatId} />}
         {page === 'connections' && <Connections state={state} refresh={refresh} notify={notify} />}
         {page === 'plugins' && <Plugins state={state} refresh={refresh} notify={notify} />}
         {page === 'settings' && <Settings state={state} refresh={refresh} notify={notify} />}
+        <Suspense fallback={<div className="bootstrap"><LoaderCircle className="spin"/>Loading workspace tools…</div>}>{page === 'control' && <ControlPanel state={state} refresh={refresh} notify={notify} onOpenChat={id=>{setChatId(id);setPage('workspace');}}/>}
+        {page === 'studio' && <Studio state={state} refresh={refresh} notify={notify}/>}</Suspense>
       </>}
       <footer className="statusbar"><span><Code2 size={12} />WORKBENCH<span className="statusbar-divider">/</span>{page === 'workspace' ? activeChat?.modelId || 'Choose your model. Own your workflow.' : pageNames[page]}</span><span><CircleHelp size={12} />Tools run through your local permission policy</span></footer>
     </main>

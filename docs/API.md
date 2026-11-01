@@ -33,3 +33,50 @@ POST /api/system/open `{path?:string,url?:string}` opens selected local artifact
 GET /api/doctor -> `{checks:[{name,ok,detail}]}`. POST /api/export -> sanitized state/config export `{path}`.
 
 No fake provider responses in production. Empty states should guide real setup. Show genuine errors. Chat selecting plugins must filter enabled ones and persist chat selections. Native commands require approval in ask mode; read_only denies writes/commands; trusted_native grants selected-project commands. Tool execution output feeds the timeline and persists. Buttons must call these actions or be omitted.
+
+## Version 0.2 feature APIs
+
+`GET /api/state` also exposes `profiles`, `usage`, `memories`, `hooks`, `schedules`, `notifications`, `comparisons`, `worktrees`, `teams`, `attachments`, `terminals` and pending `queue:{turns,steering}`. Attachment bodies/base64 are omitted from the state listing. Runs can be `paused`; settings include `backgroundMode`. Chats accept `profileId`, `contextIds`, `plan` and `budget:{maxRequests,maxTokens,maxCostUsd?}`. Profiles must match the chosen connection/model/endpoint. `PUT /api/workspace/file` accepts `expectedContent` for stale-write protection and `chatId` for checkpoints.
+
+The following routes are relative to `/api/features`. POST is used unless stated otherwise; deleting items uses DELETE.
+
+| Route | Body / result |
+| --- | --- |
+| `profiles` | Save `{id?,label,connectionId,modelId,contextWindow,maxOutputTokens,tools,vision,temperature?,reasoningEffort?,inputPrice?,outputPrice?}`; prices are USD/million tokens. |
+| `profiles/:id/probe`; DELETE `profiles/:id` | Real text/stream/tool probe with evidence, or remove an unselected profile. |
+| `compare` | `{profileIds,prompt,expectedText?,testTools?}` → comparison record; poll state/entity for results. Registers cancellation under comparison ID. |
+| `context` | Save `{kind:'file'|'folder'|'selection'|'symbol'|'image'|'pdf',projectId?,chatId?,name?,path?,line?,content?,dataBase64?}` → attachment; select its ID through chat `contextIds`. |
+| GET `context/:id`; DELETE `context/:id` | Resolve actual attachment contents, or remove and deselect it. |
+| GET `context/preview?chatId=...` | Expanded contents, provenance, image count and approximate text token count. |
+| GET `index?projectId=...&query=...` | Bounded files and lexical declaration matches with paths/line numbers. |
+| `tasks/:chatId/fork` | `{messageId?}` → independent chat/transcript. |
+| `tasks/:chatId/plan` | `{steps:[{title,status:'pending'|'running'|'done'|'blocked'}]}`. |
+| `tasks/:chatId/enqueue` | `{text,mode:'steer'|'queue'}` → durable pending instruction. |
+| `runs/:id/pause`, `resume`, `cancel`; DELETE `queue/:id` | Pause/resume at safe boundaries, cancel a run/team/comparison, or cancel an unclaimed message. |
+| `memory`; DELETE `memory/:id` | Save `{id?,projectId,title,content,source?,enabled?}` or remove. |
+| `hooks`; DELETE `hooks/:id` | `{id?,projectId,label,event,program,args:string[],timeoutSecs?,enabled,confirmNative:true}`. Supported events: before_turn, after_write, before_complete, on_failure. |
+| `schedules`; DELETE `schedules/:id`; `schedules/:id/run` | `{id?,chatId,name,prompt,intervalMinutes,enabled,notify?,confirmExecution:true}`; run-now requires enabled confirmation. |
+| `notifications/:id/read` | Mark a saved notice read. Notices can include resulting chat/run IDs. |
+| `teams` | `{projectId,prompt,mode:'pipeline'|'parallel',stages:[{profileId,role:'research'|'plan'|'code'|'review'}],budget}` → team record; worker records link to chats/approvals/worktrees. |
+| `worktrees`; `worktrees/:id/merge` | `{projectId}` creates a real linked checkout; merge integrates reviewed committed work into a clean original checkout. |
+| GET `git/status?projectId=...`; `git/commit` | Libgit2 status; commit `{projectId,paths:string[],message}`. |
+| `git/pull-request` | `{projectId,base,title,body,confirmPublish:true}`; publishes current committed feature branch to a validated GitHub origin using host-controlled Git configuration and authenticated gh. |
+| GET `review?chatId=...&path=...` | Hunk preimages/current contents and conflict hashes. |
+| `review/decide`; `review/comment` | Submit the hunk/hash returned by review with the decision, or save `{chatId,path,content}`. See `src/HunkReview.tsx` for the exact hunk payload. |
+| `terminal/start` | `{projectId,confirmed:true,program?,args?}` → native PTY session. |
+| GET `terminal/:id/read?cursor=...` | Incremental `{text,cursor,truncated,status}`. |
+| `terminal/:id/input`, `resize`, `stop` | `{text}`, `{cols,rows}`, or empty body. Live sessions appear in state and can be reattached after UI navigation. |
+| GET `entity/:kind/:id` | Retrieve comparison/team/usage/schedule/notification. |
+
+## Plugin Studio APIs
+
+All routes below are relative to `/api/studio`; operations use POST except GET `state`. Studio state contains saved cases, bounded traces, catalog entries, previews, browser test evidence, backups and verified update records. Explicit execution/installation/restoration operations require `confirmed:true`; they do not grant agent tools authority.
+
+- `invoke`: actual selected plugin server tool/resource/prompt operations, Skill trials use the regular chat/turn APIs with selected instructions and a saved connection. `case`, `case/delete`, `cases/run`: persisted assertions and actual regression runs. Success/contains/JSON-pointer equality assertions assess actual returned values.
+- `generate`: use a saved model connection to generate plugin source at a reviewed destination. Build, install and execute remain explicit subsequent actions.
+- `catalog/browse`, `catalog/add`, `catalog/check`, `catalog/install`, `catalog/delete`: inspect registry metadata and pinned GitHub packages, verify digests, review and install/update. Version metadata never implies execution succeeded.
+- `browser/start`, `browser/stop`, `browser/test`, `browser/artifact`: managed native preview commands, isolated local browser actions/assertions and actual artifacts. Targets must be loopback. Browser state and logs are redacted against known vault values.
+- `backup/create`, `backup/restore`: passphrase-encrypted portable profile export and destination/restart restore. The current profile is never hot-replaced while its database is open.
+- `update/check`, `update/install`: verify a stable/preview manifest with a trusted publisher key, then verify/download the exact installer and schedule it after exit. Custom trust changes are explicit.
+
+Studio payload types and schema-form rendering are defined in `src/Studio.tsx`, with validation in `studio_*.rs`. The UI uses these real routes; it does not synthesize successful external results. A Tauri `quit_workbench` command requests true process exit even when tray background mode is enabled, allowing restore/update to proceed.
