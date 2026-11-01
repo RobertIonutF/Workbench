@@ -1,0 +1,17 @@
+/target/
+/node_modules/
+/dist/
+/output/
+/.workbench-data/
+*.log
+src-tauri/gen/
+*.local
+/.playwright-cli/
+*.tsbuildinfo
+/.frontend-craft/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+.env
+.env.*
+!.env.example

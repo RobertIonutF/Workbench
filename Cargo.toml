@@ -1,0 +1,16 @@
+[workspace]
+members = ["crates/workbench-core", "src-tauri"]
+default-members = ["crates/workbench-core"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[profile.release]
+strip = true
+lto = "thin"
+
+[profile.dev]
+debug = 1
